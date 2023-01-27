@@ -72,6 +72,30 @@ class ChannelLifecycleHandler: ChannelInboundHandler {
     }
 }
 
+/*
+struct TestPooledBuffer: PoolElement {
+    private let buffer: UnsafeMutableRawBufferPointer
+
+    init() {
+        let byteCount = (MemoryLayout<IOVector>.stride + MemoryLayout<Unmanaged<AnyObject>>.stride) * Socket.writevLimitIOVectors
+        self.buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: byteCount + MemoryLayout<UInt32>.stride, alignment: MemoryLayout<IOVector>.alignment)
+        self.buffer.storeBytes(of: 0xdeadbee, toByteOffset: byteCount, as: UInt32.self)
+    }
+
+    func evictedFromPool() {
+        XCTAssertEqual(0xdeadbee, self.buffer.baseAddress!.load(fromByteOffset: buffer.count, as: UInt32.self))
+        self.buffer.deallocate()
+    }
+
+    func get() -> (UnsafeMutableBufferPointer<IOVector>, UnsafeMutableBufferPointer<Unmanaged<AnyObject>>) {
+        let count = Socket.writevLimitIOVectors
+        let iovecs = (buffer.baseAddress!).bindMemory(to: IOVector.self, capacity: count)
+        let storageRefs = (buffer.baseAddress! + (count * MemoryLayout<IOVector>.stride)).bindMemory(to: Unmanaged<AnyObject>.self, capacity: count)
+        return (UnsafeMutableBufferPointer(start: iovecs, count: count), UnsafeMutableBufferPointer(start: storageRefs, count: count))
+    }
+}
+*/
+
 public final class ChannelTests: XCTestCase {
     func testBasicLifecycle() throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -209,30 +233,18 @@ public final class ChannelTests: XCTestCase {
     }
 
     private func withPendingStreamWritesManager(_ body: (PendingStreamWritesManager) throws -> Void) rethrows {
-        try withExtendedLifetime(NSObject()) { o in
-            var iovecs: [IOVector] = Array(repeating: iovec(), count: Socket.writevLimitIOVectors + 1)
-            var managed: [Unmanaged<AnyObject>] = Array(repeating: Unmanaged.passUnretained(o), count: Socket.writevLimitIOVectors + 1)
-            /* put a canary value at the end */
-            iovecs[iovecs.count - 1] = iovec(iov_base: UnsafeMutableRawPointer(bitPattern: 0xdeadbee)!, iov_len: 0xdeadbee)
-            try iovecs.withUnsafeMutableBufferPointer { iovecs in
-                try managed.withUnsafeMutableBufferPointer { managed in
-                    let pwm = NIOPosix.PendingStreamWritesManager(iovecs: iovecs, storageRefs: managed)
-                    XCTAssertTrue(pwm.isEmpty)
-                    XCTAssertTrue(pwm.isOpen)
-                    XCTAssertFalse(pwm.isFlushPending)
-                    XCTAssertTrue(pwm.isWritable)
+        let bufferPool = Pool<PooledBuffer>(maxSize: 16)
+        let pwm = NIOPosix.PendingStreamWritesManager(bufferPool: bufferPool)
 
-                    try body(pwm)
+        XCTAssertTrue(pwm.isEmpty)
+        XCTAssertTrue(pwm.isOpen)
+        XCTAssertFalse(pwm.isFlushPending)
+        XCTAssertTrue(pwm.isWritable)
 
-                    XCTAssertTrue(pwm.isEmpty)
-                    XCTAssertFalse(pwm.isFlushPending)
-                }
-            }
-            /* assert that the canary values are still okay, we should definitely have never written those */
-            XCTAssertEqual(managed.last!.toOpaque(), Unmanaged.passUnretained(o).toOpaque())
-            XCTAssertEqual(0xdeadbee, Int(bitPattern: iovecs.last!.iov_base))
-            XCTAssertEqual(0xdeadbee, iovecs.last!.iov_len)
-        }
+        try body(pwm)
+
+        XCTAssertTrue(pwm.isEmpty)
+        XCTAssertFalse(pwm.isFlushPending)
     }
 
     /// A frankenstein testing monster. It asserts that for `PendingStreamWritesManager` `pwm` and `EventLoopPromises` `promises`
