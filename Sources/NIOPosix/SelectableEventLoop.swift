@@ -55,6 +55,10 @@ struct PooledBuffer: PoolElement {
         let count = self.bufferSize / (MemoryLayout<IOVector>.stride + MemoryLayout<Unmanaged<AnyObject>>.stride)
         let iovecs = self.buffer.bindMemory(to: IOVector.self, capacity: count)
         let storageRefs = (self.buffer + (count * MemoryLayout<IOVector>.stride)).bindMemory(to: Unmanaged<AnyObject>.self, capacity: count)
+        assert((iovecs >= self.buffer) && (iovecs <= (self.buffer + self.bufferSize)))
+        assert((storageRefs >= self.buffer) && (storageRefs <= (self.buffer + self.bufferSize)))
+        assert((iovecs + count) == storageRefs)
+        assert((storageRefs + count) <= (self.buffer + bufferSize))
         return (UnsafeMutableBufferPointer(start: iovecs, count: count), UnsafeMutableBufferPointer(start: storageRefs, count: count))
     }
 }
