@@ -617,10 +617,22 @@ final class DatagramChannel: BaseSocketChannel<Socket> {
 
         // These control bytes must not escape the current call stack
         let controlBytesBuffer: UnsafeMutableRawBufferPointer
+        var pooledMsgBuffer: PooledMsgBuffer?
         if self.reportExplicitCongestionNotifications || self.receivePacketInfo {
-            controlBytesBuffer = self.selectableEventLoop.controlMessageStorage[0]
+            pooledMsgBuffer = self.selectableEventLoop.msgBufferPool.get()
+            var controlMessageStorage: UnsafeControlMessageStorage
+            pooledMsgBuffer!.withUnsafePointers { _, _, _controlMessageStorage in
+                controlMessageStorage = _controlMessageStorage
+            }
+            controlBytesBuffer = controlMessageStorage[0]
         } else {
             controlBytesBuffer = UnsafeMutableRawBufferPointer(start: nil, count: 0)
+        }
+
+        defer {
+            if let pooledMsgBuffer {
+                self.selectableEventLoop.msgBufferPool.put(pooledMsgBuffer)
+            }
         }
 
         for _ in 1...self.maxMessagesPerRead {
